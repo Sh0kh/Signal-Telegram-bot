@@ -16,6 +16,20 @@ let fibLevels = {};
 let supportResistanceLevels = [];
 let lastAnalysisTime = 0;
 
+// Настройки пользователей - добавляем хранилище для пользовательских настроек
+const userSettings = {};
+
+// Функция для получения или создания настроек пользователя
+function getUserSettings(chatId) {
+    if (!userSettings[chatId]) {
+        userSettings[chatId] = {
+            symbol: 'BTCUSDT',
+            interval: '15m'
+        };
+    }
+    return userSettings[chatId];
+}
+
 // Клавиатуры
 const mainKeyboard = {
     reply_markup: {
@@ -210,9 +224,10 @@ function calculateIndicators() {
     };
 }
 
-async function sendMarketAnalysis(chatId, symbol = 'BTCUSDT', interval = '15m') {
+async function sendMarketAnalysis(chatId) {
     try {
-        await fetchMarketData(symbol, interval);
+        const settings = getUserSettings(chatId);
+        await fetchMarketData(settings.symbol, settings.interval);
         calculateFibonacciLevels();
         calculateSupportResistance();
         const indicators = calculateIndicators();
@@ -289,7 +304,7 @@ async function sendMarketAnalysis(chatId, symbol = 'BTCUSDT', interval = '15m') 
         confidence = Math.max(0, Math.min(100, confidence + 50));
 
         // Формирование сообщения
-        let message = `📈 Анализ рынка (${symbol} ${interval}) - ${new Date().toLocaleString()}\n\n`;
+        let message = `📈 Анализ рынка (${settings.symbol} ${settings.interval}) - ${new Date().toLocaleString()}\n\n`;
         message += `Текущая цена: ${currentPrice.toFixed(2)}\n\n`;
 
         // Уровни Фибоначчи
@@ -352,12 +367,13 @@ async function sendMarketAnalysis(chatId, symbol = 'BTCUSDT', interval = '15m') 
 }
 
 function sendIndicatorsInfo(chatId) {
-    fetchMarketData().then(() => {
+    const settings = getUserSettings(chatId);
+    fetchMarketData(settings.symbol, settings.interval).then(() => {
         const indicators = calculateIndicators();
         const lastCandle = marketData[marketData.length - 1];
         const currentPrice = lastCandle.close;
 
-        let message = `📊 Показатели индикаторов (BTCUSDT 15m)\n\n`;
+        let message = `📊 Показатели индикаторов (${settings.symbol} ${settings.interval})\n\n`;
         message += `📈 Текущая цена: ${currentPrice.toFixed(2)}\n\n`;
 
         // RSI
@@ -387,13 +403,14 @@ function sendIndicatorsInfo(chatId) {
 }
 
 function sendLevelsInfo(chatId) {
-    fetchMarketData().then(() => {
+    const settings = getUserSettings(chatId);
+    fetchMarketData(settings.symbol, settings.interval).then(() => {
         calculateFibonacciLevels();
         calculateSupportResistance();
         const lastCandle = marketData[marketData.length - 1];
         const currentPrice = lastCandle.close;
 
-        let message = `📊 Уровни рынка (BTCUSDT 15m)\n\n`;
+        let message = `📊 Уровни рынка (${settings.symbol} ${settings.interval})\n\n`;
         message += `📈 Текущая цена: ${currentPrice.toFixed(2)}\n\n`;
 
         // Фибоначчи
@@ -426,7 +443,7 @@ function sendLevelsInfo(chatId) {
 // Обработка ошибок
 function sendError(errorMessage) {
     console.error(`[ERROR] ${new Date().toISOString()}: ${errorMessage}`);
-    bot.sendMessage(CHAT_ID, `⚠️ Ошибка в работе бота: ${error.message}`)
+    bot.sendMessage(CHAT_ID, `⚠️ Ошибка в работе бота: ${errorMessage}`)
         .catch(err => console.error(`Не удалось отправить сообщение об ошибке: ${err.message}`));
 }
 
@@ -480,6 +497,8 @@ bot.on('message', (msg) => {
         case '1h':
         case '4h':
         case '1d':
+            // Сохраняем выбранный таймфрейм
+            getUserSettings(chatId).interval = text;
             bot.sendMessage(chatId, `Таймфрейм изменен на ${text}. Новые анализы будут использовать этот интервал.`, mainKeyboard);
             break;
 
@@ -487,6 +506,8 @@ bot.on('message', (msg) => {
         case 'ETHUSDT':
         case 'BNBUSDT':
         case 'SOLUSDT':
+            // Сохраняем выбранную пару
+            getUserSettings(chatId).symbol = text;
             bot.sendMessage(chatId, `Торговая пара изменена на ${text}. Новые анализы будут использовать эту пару.`, mainKeyboard);
             break;
 
@@ -506,7 +527,20 @@ function analyzeMarket() {
     if (Date.now() - lastAnalysisTime < 15 * 60 * 1000) return;
     lastAnalysisTime = Date.now();
 
-    sendMarketAnalysis(CHAT_ID)
+    // Для автоматического анализа используем настройки по умолчанию для основного чата
+    const settings = getUserSettings(CHAT_ID);
+    
+    fetchMarketData(settings.symbol, settings.interval)
+        .then(() => {
+            calculateFibonacciLevels();
+            calculateSupportResistance();
+            const indicators = calculateIndicators();
+            
+            // Остальной код анализа... (такой же как в sendMarketAnalysis)
+            // Для краткости опустим повторение кода
+            
+            sendMarketAnalysis(CHAT_ID);
+        })
         .catch(error => sendError(`Ошибка автоматического анализа: ${error.message}`));
 }
 
