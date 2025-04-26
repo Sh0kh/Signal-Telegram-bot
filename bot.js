@@ -1,479 +1,513 @@
-require('dotenv').config();
-const { Telegraf } = require('telegraf');
-const fetch = (...args) =>
-    import('node-fetch').then(({ default: fetch }) => fetch(...args));
+const TelegramBot = require('node-telegram-bot-api');
+const axios = require('axios');
+const ti = require('technicalindicators');
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
-const API_KEY = process.env.API_KEY;
-const CHAT_ID = process.env.CHAT_ID;
-const BASE_URL = 'https://api.twelvedata.com';
+// Конфигурация
+const BOT_TOKEN = '7955550632:AAGrNgJRVbnIWsckCkcyZglo-lxvooWT3Wg';
+const API_KEY = 'a9db6b712c1a40299e39d7266af5b2b3';
+const CHAT_ID = '5214859281';
 
-const SYMBOLS = [
-    { pair: 'EUR/USD', name: 'Евро/Доллар' },
-    { pair: 'GBP/USD', name: 'Фунт/Доллар' },
-    { pair: 'USD/JPY', name: 'Доллар/Йена' },
-    { pair: 'AUD/USD', name: 'Австралийский доллар/Доллар' }
-];
-const INTERVAL = '15min';
-const AUTO_CHECK_INTERVAL = 5 * 60 * 1000;
+// Инициализация бота
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
-let nextAnalysisTime = Date.now() + 10000;
-let autoAnalysisTimer = null;
+// Глобальные переменные
+let marketData = [];
+let fibLevels = {};
+let supportResistanceLevels = [];
+let lastAnalysisTime = 0;
 
-// Уровни доверия с цветами и описаниями
-const CONFIDENCE_LEVELS = {
-    'VERY_HIGH': { 
-        emoji: '🟢', 
-        name: 'Очень высокий',
-        description: 'Сильный сигнал с множеством подтверждающих факторов'
-    },
-    'HIGH': { 
-        emoji: '🟩', 
-        name: 'Высокий',
-        description: 'Хороший сигнал с несколькими подтверждениями'
-    },
-    'MEDIUM': { 
-        emoji: '🟨', 
-        name: 'Средний',
-        description: 'Умеренный сигнал с некоторыми подтверждениями'
-    },
-    'LOW': { 
-        emoji: '🟧', 
-        name: 'Низкий',
-        description: 'Слабый сигнал, требуется дополнительная проверка'
-    },
-    'VERY_LOW': { 
-        emoji: '🟥', 
-        name: 'Очень низкий',
-        description: 'Очень слабый сигнал, рекомендуется воздержаться'
+// Клавиатуры
+const mainKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['📊 Анализ рынка'],
+            ['📈 Индикаторы', '📉 Уровни'],
+            ['⚙️ Настройки']
+        ],
+        resize_keyboard: true
     }
 };
 
-function formatTimeRemaining(targetTime) {
-    const now = Date.now();
-    const milliseconds = Math.max(0, targetTime - now);
-
-    if (milliseconds < 1000) return "менее 1 секунды";
-
-    const seconds = Math.floor(milliseconds / 1000) % 60;
-    const minutes = Math.floor(milliseconds / (1000 * 60));
-
-    let minutesText = `${minutes} минут`;
-    let secondsText = `${seconds} секунд`;
-
-    if (minutes === 1 || minutes % 10 === 1 && minutes !== 11) minutesText = `${minutes} минуту`;
-    else if ((minutes >= 2 && minutes <= 4) || (minutes % 10 >= 2 && minutes % 10 <= 4 && (minutes < 12 || minutes > 14))) minutesText = `${minutes} минуты`;
-
-    if (seconds === 1 || seconds % 10 === 1 && seconds !== 11) secondsText = `${seconds} секунду`;
-    else if ((seconds >= 2 && seconds <= 4) || (seconds % 10 >= 2 && seconds % 10 <= 4 && (seconds < 12 || seconds > 14))) secondsText = `${seconds} секунды`;
-
-    if (minutes === 0) return secondsText;
-    else if (seconds === 0) return minutesText;
-    else return `${minutesText} ${secondsText}`;
-}
-
-async function fetchData(url) {
-    try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
-
-        if (data.status === 'error') {
-            throw new Error(`API error: ${data.message || 'Unknown API error'}`);
-        }
-
-        return data;
-    } catch (error) {
-        console.error('Ошибка fetch:', error);
-        throw error;
+const intervalKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['15m', '1h', '4h'],
+            ['1d', 'Назад']
+        ],
+        resize_keyboard: true
     }
-}
+};
 
-// Функция для расчета волатильности (ATR)
-async function getATR(symbol, period = 14) {
+const symbolKeyboard = {
+    reply_markup: {
+        keyboard: [
+            ['BTCUSDT', 'ETHUSDT'],
+            ['BNBUSDT', 'SOLUSDT'],
+            ['Назад']
+        ],
+        resize_keyboard: true
+    }
+};
+
+// Основные функции
+async function fetchMarketData(symbol = 'BTCUSDT', interval = '15m', limit = 100) {
     try {
-        const url = `${BASE_URL}/atr?symbol=${symbol.pair}&interval=${INTERVAL}&time_period=${period}&apikey=${API_KEY}`;
-        const data = await fetchData(url);
-        return parseFloat(data.values[0].atr);
+        const response = await axios.get(`https://api.binance.com/api/v3/klines`, {
+            params: {
+                symbol: symbol,
+                interval: interval,
+                limit: limit
+            }
+        });
+        marketData = response.data.map(item => ({
+            time: item[0],
+            open: parseFloat(item[1]),
+            high: parseFloat(item[2]),
+            low: parseFloat(item[3]),
+            close: parseFloat(item[4]),
+            volume: parseFloat(item[5])
+        }));
+
+        return marketData;
     } catch (error) {
-        console.error(`Ошибка получения ATR для ${symbol.name}:`, error);
+        sendError(`Ошибка при получении данных: ${error.message}`);
         return null;
     }
 }
 
-async function getSignal(symbol) {
-    try {
-        // Получаем все необходимые данные
-        const urls = [
-            `${BASE_URL}/time_series?symbol=${symbol.pair}&interval=${INTERVAL}&outputsize=50&apikey=${API_KEY}`,
-            `${BASE_URL}/sma?symbol=${symbol.pair}&interval=${INTERVAL}&time_period=7&apikey=${API_KEY}`,
-            `${BASE_URL}/sma?symbol=${symbol.pair}&interval=${INTERVAL}&time_period=25&apikey=${API_KEY}`,
-            `${BASE_URL}/ema?symbol=${symbol.pair}&interval=${INTERVAL}&time_period=50&apikey=${API_KEY}`,
-            `${BASE_URL}/rsi?symbol=${symbol.pair}&interval=${INTERVAL}&time_period=14&apikey=${API_KEY}`,
-            `${BASE_URL}/macd?symbol=${symbol.pair}&interval=${INTERVAL}&series_type=close&apikey=${API_KEY}`
-        ];
+function calculateFibonacciLevels() {
+    if (marketData.length < 2) return null;
 
-        const results = [];
-        for (const url of urls) {
-            const result = await fetchData(url);
-            results.push(result);
-            await new Promise(resolve => setTimeout(resolve, 1500));
-        }
+    // Находим максимальный и минимальный уровень за период
+    const highs = marketData.map(item => item.high);
+    const lows = marketData.map(item => item.low);
+    const highestHigh = Math.max(...highs);
+    const lowestLow = Math.min(...lows);
 
-        const [priceData, sma7Data, sma25Data, ema50Data, rsiData, macdData] = results;
+    // Точки Фибоначчи
+    fibLevels = {
+        point0: highestHigh,
+        point100: lowestLow,
+        level236: highestHigh - (highestHigh - lowestLow) * 0.236,
+        level382: highestHigh - (highestHigh - lowestLow) * 0.382,
+        level500: highestHigh - (highestHigh - lowestLow) * 0.5,
+        level618: highestHigh - (highestHigh - lowestLow) * 0.618,
+        level786: highestHigh - (highestHigh - lowestLow) * 0.786,
+        level1000: lowestLow
+    };
 
-        // Проверка данных
-        if (!priceData.values || !sma7Data.values || !sma25Data.values || 
-            !ema50Data.values || !rsiData.values || !macdData.values) {
-            throw new Error('Неполные данные от API');
-        }
-
-        // Получаем последние значения
-        const latestPrice = parseFloat(priceData.values[0].close);
-        const prevPrice = parseFloat(priceData.values[1].close);
-        const sma7 = parseFloat(sma7Data.values[0].sma);
-        const sma25 = parseFloat(sma25Data.values[0].sma);
-        const ema50 = parseFloat(ema50Data.values[0].ema);
-        const rsi = parseFloat(rsiData.values[0].rsi);
-        const macd = parseFloat(macdData.values[0].macd);
-        const macdSignal = parseFloat(macdData.values[0].macd_signal);
-        const macdHist = parseFloat(macdData.values[0].macd_hist);
-
-        // Получаем волатильность (ATR)
-        const atr = await getATR(symbol) || (latestPrice * 0.01);
-
-        // Рассчитываем динамические SL/TP на основе ATR
-        const slDistance = atr * 1.5;
-        const tpDistance = atr * 2.5;
-        const slBuy = (latestPrice - slDistance).toFixed(5);
-        const tpBuy = (latestPrice + tpDistance).toFixed(5);
-        const slSell = (latestPrice + slDistance).toFixed(5);
-        const tpSell = (latestPrice - tpDistance).toFixed(5);
-
-        // Определяем тренд
-        const trendUp = sma7 > sma25 && sma25 > ema50;
-        const trendDown = sma7 < sma25 && sma25 < ema50;
-
-        // Определяем сигналы и уровни доверия
-        let signal = 'HOLD';
-        let confidence = 'VERY_LOW';
-        let reasons = [];
-        let hasActionSignal = false;
-
-        // Сигналы на покупку
-        if (trendUp && rsi < 60 && macd > macdSignal) {
-            signal = 'BUY';
-            confidence = 'HIGH';
-            reasons.push('Тренд вверх (SMA7 > SMA25 > EMA50)');
-            reasons.push('RSI не перекуплен (<60)');
-            reasons.push('MACD выше сигнальной линии');
-            hasActionSignal = true;
-            
-            // Повышаем доверие при дополнительных подтверждениях
-            if (rsi > 30 && rsi < 50) {
-                confidence = 'VERY_HIGH';
-                reasons.push('RSI в оптимальной зоне (30-50)');
-            }
-            
-            if (macdHist > 0 && macdHist > macdData.values[1].macd_hist) {
-                reasons.push('Гистограмма MACD растет');
-            }
-        }
-        // Сигналы на продажу
-        else if (trendDown && rsi > 40 && macd < macdSignal) {
-            signal = 'SELL';
-            confidence = 'HIGH';
-            reasons.push('Тренд вниз (SMA7 < SMA25 < EMA50)');
-            reasons.push('RSI не перепродан (>40)');
-            reasons.push('MACD ниже сигнальной линии');
-            hasActionSignal = true;
-            
-            // Повышаем доверие при дополнительных подтверждениях
-            if (rsi > 50 && rsi < 70) {
-                confidence = 'VERY_HIGH';
-                reasons.push('RSI в оптимальной зоне (50-70)');
-            }
-            
-            if (macdHist < 0 && macdHist < macdData.values[1].macd_hist) {
-                reasons.push('Гистограмма MACD снижается');
-            }
-        }
-        // Нейтральные сигналы с меньшим доверием
-        else if (sma7 > sma25 && rsi < 70 && macd > 0) {
-            signal = 'BUY';
-            confidence = 'MEDIUM';
-            reasons.push('Краткосрочный тренд вверх (SMA7 > SMA25)');
-            reasons.push('RSI не перекуплен (<70)');
-            reasons.push('MACD выше нуля');
-            hasActionSignal = true;
-        }
-        else if (sma7 < sma25 && rsi > 30 && macd < 0) {
-            signal = 'SELL';
-            confidence = 'MEDIUM';
-            reasons.push('Краткосрочный тренд вниз (SMA7 < SMA25)');
-            reasons.push('RSI не перепродан (>30)');
-            reasons.push('MACD ниже нуля');
-            hasActionSignal = true;
-        }
-        // Очень слабые сигналы
-        else if (latestPrice > sma7 && sma7 > sma25 && rsi < 65) {
-            signal = 'BUY';
-            confidence = 'LOW';
-            reasons.push('Цена выше SMA7 и SMA25');
-            reasons.push('RSI умеренный (<65)');
-            hasActionSignal = true;
-        }
-        else if (latestPrice < sma7 && sma7 < sma25 && rsi > 35) {
-            signal = 'SELL';
-            confidence = 'LOW';
-            reasons.push('Цена ниже SMA7 и SMA25');
-            reasons.push('RSI умеренный (>35)');
-            hasActionSignal = true;
-        }
-
-        // Эмодзи для сигналов
-        const signalEmoji = {
-            'BUY': '🔼',
-            'SELL': '🔽',
-            'HOLD': '↔️'
-        }[signal];
-
-        // Получаем данные об уровне доверия
-        const confidenceData = CONFIDENCE_LEVELS[confidence] || CONFIDENCE_LEVELS.VERY_LOW;
-
-        return {
-            symbol: symbol.name,
-            pair: symbol.pair,
-            latestPrice,
-            sma7,
-            sma25,
-            ema50,
-            rsi,
-            macd,
-            macdSignal,
-            macdHist,
-            atr,
-            signal: `${signalEmoji} ${signal}`,
-            confidence: confidenceData,
-            reasons,
-            tp: signal === 'BUY' ? tpBuy : tpSell,
-            sl: signal === 'BUY' ? slBuy : slSell,
-            hasActionSignal,
-            trend: trendUp ? 'Восходящий' : trendDown ? 'Нисходящий' : 'Боковой'
-        };
-    } catch (error) {
-        console.error(`Ошибка для ${symbol.name}:`, error.message);
-        return {
-            symbol: symbol.name,
-            error: error.message
-        };
-    }
+    return fibLevels;
 }
 
-async function sendMessage(ctx, text) {
-    try {
-        if (ctx) {
-            await ctx.replyWithMarkdown(text);
-        } else if (CHAT_ID) {
-            await bot.telegram.sendMessage(CHAT_ID, text, { parse_mode: 'Markdown' });
+function calculateSupportResistance() {
+    if (marketData.length < 20) return null;
+
+    supportResistanceLevels = [];
+    const sensitivity = 2;
+
+    // Алгоритм обнаружения локальных экстремумов
+    for (let i = sensitivity; i < marketData.length - sensitivity; i++) {
+        const windowHigh = marketData.slice(i - sensitivity, i + sensitivity + 1).map(item => item.high);
+        const windowLow = marketData.slice(i - sensitivity, i + sensitivity + 1).map(item => item.low);
+
+        const currentHigh = marketData[i].high;
+        const currentLow = marketData[i].low;
+
+        if (currentHigh === Math.max(...windowHigh)) {
+            supportResistanceLevels.push({
+                value: currentHigh,
+                type: 'resistance',
+                time: marketData[i].time
+            });
         }
-    } catch (error) {
-        console.error('Ошибка отправки:', error.message);
+
+        if (currentLow === Math.min(...windowLow)) {
+            supportResistanceLevels.push({
+                value: currentLow,
+                type: 'support',
+                time: marketData[i].time
+            });
+        }
     }
+
+    supportResistanceLevels = supportResistanceLevels
+        .filter((level, index, self) =>
+            index === self.findIndex(l => Math.abs(l.value - level.value) < level.value * 0.001)
+        )
+        .sort((a, b) => a.value - b.value);
+
+    return supportResistanceLevels;
 }
 
-async function sendSignals(ctx = null, isAutoCheck = false) {
-    try {
-        if (!isAutoCheck) {
-            await sendMessage(ctx, '🔍 Начинаю углубленный анализ рынка...');
+function calculateIndicators() {
+    const closes = marketData.map(item => item.close);
+    const highs = marketData.map(item => item.high);
+    const lows = marketData.map(item => item.low);
+
+    // RSI
+    const rsiInput = {
+        values: closes,
+        period: 14
+    };
+    const rsi = ti.RSI.calculate(rsiInput);
+    const lastRsi = rsi[rsi.length - 1];
+
+    // MACD
+    const macdInput = {
+        values: closes,
+        fastPeriod: 12,
+        slowPeriod: 26,
+        signalPeriod: 9,
+        SimpleMAOscillator: false,
+        SimpleMASignal: false
+    };
+    const macd = ti.MACD.calculate(macdInput);
+    const lastMacd = macd[macd.length - 1];
+
+    // Bollinger Bands
+    const bbInput = {
+        values: closes,
+        period: 20,
+        stdDev: 2
+    };
+    const bb = ti.BollingerBands.calculate(bbInput);
+    const lastBb = bb[bb.length - 1];
+
+    // Stochastic
+    const stochasticInput = {
+        high: highs,
+        low: lows,
+        close: closes,
+        period: 14,
+        signalPeriod: 3
+    };
+    const stochastic = ti.Stochastic.calculate(stochasticInput);
+    const lastStochastic = stochastic[stochastic.length - 1];
+
+    return {
+        rsi: {
+            value: lastRsi,
+            overbought: lastRsi > 70,
+            oversold: lastRsi < 30
+        },
+        macd: {
+            value: lastMacd,
+            histogram: lastMacd.histogram,
+            signal: lastMacd.signal > lastMacd.MACD ? 'BUY' : 'SELL'
+        },
+        bollinger: {
+            upper: lastBb.upper,
+            middle: lastBb.middle,
+            lower: lastBb.lower,
+            pricePosition: (marketData[marketData.length - 1].close - lastBb.lower) / (lastBb.upper - lastBb.lower) * 100
+        },
+        stochastic: {
+            k: lastStochastic.k,
+            d: lastStochastic.d,
+            overbought: lastStochastic.k > 80,
+            oversold: lastStochastic.k < 20
         }
+    };
+}
 
-        let hasAnySignal = false;
-        const results = [];
+async function sendMarketAnalysis(chatId, symbol = 'BTCUSDT', interval = '15m') {
+    try {
+        await fetchMarketData(symbol, interval);
+        calculateFibonacciLevels();
+        calculateSupportResistance();
+        const indicators = calculateIndicators();
 
-        for (const symbol of SYMBOLS) {
-            const result = await getSignal(symbol);
+        const lastCandle = marketData[marketData.length - 1];
+        const currentPrice = lastCandle.close;
 
-            if (result.error) {
-                if (!isAutoCheck) {
-                    await sendMessage(ctx, `❌ ${symbol.name}: ${result.error}`);
+        // Анализ сигналов
+        let signals = [];
+        let confidence = 0;
+
+        // 1. Проверка уровней Фибоначчи
+        const fibDistances = {};
+        for (const [level, value] of Object.entries(fibLevels)) {
+            if (level.includes('level')) {
+                const distance = Math.abs(currentPrice - value) / value * 100;
+                fibDistances[level] = distance;
+
+                if (distance < 0.5) { // Цена близко к уровню Фибоначчи
+                    signals.push(`Цена находится у уровня Фибоначчи ${level.replace('level', '')}% (${value.toFixed(2)})`);
+                    confidence += 15;
                 }
-                continue;
-            }
-
-            results.push(result);
-            if (result.hasActionSignal) {
-                hasAnySignal = true;
             }
         }
 
-        updateNextAnalysisTime();
+        // 2. Проверка локальных уровней поддержки/сопротивления
+        for (const level of supportResistanceLevels) {
+            const distance = Math.abs(currentPrice - level.value) / level.value * 100;
 
-        // Если это автоматическая проверка и нет сигналов
-        if (isAutoCheck && !hasAnySignal && results.length > 0) {
-            const timeRemaining = formatTimeRemaining(nextAnalysisTime);
-            await sendMessage(null, `⚠️ *Автоматический анализ: нет сильных торговых сигналов*\n\nПроанализировано пар: ${results.length}\nВремя: ${new Date().toLocaleTimeString()}\n\n⏱ Следующий анализ через: ${timeRemaining}`);
-            return;
+            if (distance < 0.3) { // Цена близко к локальному уровню
+                signals.push(`Цена находится у ${level.type === 'support' ? 'поддержки' : 'сопротивления'} ${level.value.toFixed(2)}`);
+                confidence += 15;
+            }
         }
 
-        // Отправляем результаты
-        for (const result of results) {
-            if (isAutoCheck && !result.hasActionSignal) continue;
-
-            const timeRemaining = formatTimeRemaining(nextAnalysisTime);
-            const confidence = result.confidence;
-
-            const message = `
-${isAutoCheck ? '🔄 *АВТОМАТИЧЕСКИЙ АНАЛИЗ*' : '📊 *РЕЗУЛЬТАТЫ АНАЛИЗА*'}
-${confidence.emoji} *${result.symbol} (${result.pair})*
-📌 *Сигнал*: ${result.signal} (${confidence.name})
-${confidence.emoji} *Уверенность*: ${confidence.description}
-
-💰 *Цена*: ${result.latestPrice}
-📈 *Тренд*: ${result.trend}
-📊 *Индикаторы*:
-- SMA(7): ${result.sma7.toFixed(5)}
-- SMA(25): ${result.sma25.toFixed(5)}
-- EMA(50): ${result.ema50.toFixed(5)}
-- RSI(14): ${result.rsi.toFixed(2)}
-- MACD: ${result.macd.toFixed(5)} (сигнал: ${result.macdSignal.toFixed(5)})
-- ATR(14): ${result.atr.toFixed(5)} (волатильность)
-
-🎯 *Рекомендации*:
-- TP: ${result.tp}
-- SL: ${result.sl}
-
-📝 *Обоснование*:
-${result.reasons.map(r => `• ${r}`).join('\n')}
-
-⏰ *Время анализа*: ${new Date().toLocaleTimeString()}
-⏱ *Следующий анализ через*: ${timeRemaining}
-            `.trim();
-
-            await sendMessage(isAutoCheck ? null : ctx, message);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+        // 3. Анализ индикаторов
+        // RSI
+        if (indicators.rsi.overbought) {
+            signals.push(`RSI (${indicators.rsi.value.toFixed(2)}) - ПЕРЕКУПЛЕННОСТЬ`);
+            confidence -= 10;
+        } else if (indicators.rsi.oversold) {
+            signals.push(`RSI (${indicators.rsi.value.toFixed(2)}) - ПЕРЕПРОДАНОСТЬ`);
+            confidence += 10;
         }
 
-        if (!isAutoCheck) {
-            const timeRemaining = formatTimeRemaining(nextAnalysisTime);
-            await sendMessage(ctx, `✅ Анализ завершен\n\n⏱ Следующий автоматический анализ через: ${timeRemaining}`);
+        // MACD
+        if (indicators.macd.histogram > 0 && indicators.macd.signal === 'BUY') {
+            signals.push(`MACD - Сигнал на ПОКУПКУ`);
+            confidence += 20;
+        } else if (indicators.macd.histogram < 0 && indicators.macd.signal === 'SELL') {
+            signals.push(`MACD - Сигнал на ПРОДАЖУ`);
+            confidence -= 20;
         }
+
+        // Bollinger Bands
+        if (currentPrice < indicators.bollinger.lower * 1.01) {
+            signals.push(`Цена у нижней границы Боллинджера - возможен отскок`);
+            confidence += 15;
+        } else if (currentPrice > indicators.bollinger.upper * 0.99) {
+            signals.push(`Цена у верхней границы Боллинджера - возможен отскок вниз`);
+            confidence -= 15;
+        }
+
+        // Stochastic
+        if (indicators.stochastic.oversold && indicators.stochastic.k > indicators.stochastic.d) {
+            signals.push(`Stochastic - Сигнал на ПОКУПКУ`);
+            confidence += 10;
+        } else if (indicators.stochastic.overbought && indicators.stochastic.k < indicators.stochastic.d) {
+            signals.push(`Stochastic - Сигнал на ПРОДАЖУ`);
+            confidence -= 10;
+        }
+
+        // Нормализация уверенности
+        confidence = Math.max(0, Math.min(100, confidence + 50));
+
+        // Формирование сообщения
+        let message = `📈 Анализ рынка (${symbol} ${interval}) - ${new Date().toLocaleString()}\n\n`;
+        message += `Текущая цена: ${currentPrice.toFixed(2)}\n\n`;
+
+        // Уровни Фибоначчи
+        message += `📊 Уровни Фибоначчи:\n`;
+        message += `0% (точка разворота): ${fibLevels.point0.toFixed(2)}\n`;
+        message += `23.6%: ${fibLevels.level236.toFixed(2)}\n`;
+        message += `38.2%: ${fibLevels.level382.toFixed(2)}\n`;
+        message += `50%: ${fibLevels.level500.toFixed(2)}\n`;
+        message += `61.8%: ${fibLevels.level618.toFixed(2)}\n`;
+        message += `78.6%: ${fibLevels.level786.toFixed(2)}\n`;
+        message += `100% (конечная точка): ${fibLevels.point100.toFixed(2)}\n\n`;
+
+        // Локальные уровни
+        message += `📌 Ближайшие локальные уровни:\n`;
+        const nearbyLevels = supportResistanceLevels
+            .filter(level => Math.abs(level.value - currentPrice) / currentPrice < 0.05)
+            .sort((a, b) => Math.abs(a.value - currentPrice) - Math.abs(b.value - currentPrice))
+            .slice(0, 5);
+
+        if (nearbyLevels.length > 0) {
+            nearbyLevels.forEach(level => {
+                message += `${level.type === 'support' ? 'Поддержка' : 'Сопротивление'}: ${level.value.toFixed(2)} (${new Date(level.time).toLocaleTimeString()})\n`;
+            });
+        } else {
+            message += `Нет близких локальных уровней\n`;
+        }
+        message += `\n`;
+
+        // Сигналы
+        message += `🚦 Сигналы:\n`;
+        if (signals.length > 0) {
+            signals.forEach(signal => {
+                message += `• ${signal}\n`;
+            });
+        } else {
+            message += `Нет сильных сигналов для входа\n`;
+        }
+        message += `\n`;
+
+        // Итоговая рекомендация
+        message += `🎯 Итоговая уверенность: ${confidence.toFixed(0)}%\n`;
+        if (confidence > 70) {
+            message += `💪 СИЛЬНЫЙ СИГНАЛ НА ПОКУПКУ!\n`;
+        } else if (confidence > 60) {
+            message += `👍 Умеренный сигнал на покупку\n`;
+        } else if (confidence < 30) {
+            message += `🛑 СИЛЬНЫЙ СИГНАЛ НА ПРОДАЖУ!\n`;
+        } else if (confidence < 40) {
+            message += `👎 Умеренный сигнал на продажу\n`;
+        } else {
+            message += `🤝 Нейтральная зона - лучше подождать\n`;
+        }
+
+        // Отправка сообщения
+        await bot.sendMessage(chatId, message, mainKeyboard);
     } catch (error) {
-        console.error('Ошибка sendSignals:', error);
-        const timeRemaining = formatTimeRemaining(nextAnalysisTime);
-        const errorMessage = `❗ Ошибка анализа: ${error.message}\n\n⏱ Следующий анализ через: ${timeRemaining}`;
-        
-        await sendMessage(isAutoCheck ? null : ctx, errorMessage);
-        updateNextAnalysisTime();
+        sendError(`Ошибка при анализе рынка: ${error.message}`);
+        bot.sendMessage(chatId, `Произошла ошибка при анализе рынка. Попробуйте позже.`, mainKeyboard);
     }
 }
 
-function updateNextAnalysisTime() {
-    nextAnalysisTime = Date.now() + AUTO_CHECK_INTERVAL;
-    console.log(`Следующий анализ запланирован на: ${new Date(nextAnalysisTime).toLocaleTimeString()}`);
+function sendIndicatorsInfo(chatId) {
+    fetchMarketData().then(() => {
+        const indicators = calculateIndicators();
+        const lastCandle = marketData[marketData.length - 1];
+        const currentPrice = lastCandle.close;
 
-    if (autoAnalysisTimer) clearTimeout(autoAnalysisTimer);
-    autoAnalysisTimer = setTimeout(runAutoAnalysis, AUTO_CHECK_INTERVAL);
+        let message = `📊 Показатели индикаторов (BTCUSDT 15m)\n\n`;
+        message += `📈 Текущая цена: ${currentPrice.toFixed(2)}\n\n`;
+
+        // RSI
+        message += `📉 RSI (14): ${indicators.rsi.value.toFixed(2)}\n`;
+        message += `Состояние: ${indicators.rsi.overbought ? 'ПЕРЕКУПЛЕННОСТЬ' : indicators.rsi.oversold ? 'ПЕРЕПРОДАНОСТЬ' : 'НЕЙТРАЛЬНО'}\n\n`;
+
+        // MACD
+        message += `📊 MACD (12/26/9)\n`;
+        message += `Гистограмма: ${indicators.macd.histogram.toFixed(4)}\n`;
+        message += `Сигнал: ${indicators.macd.signal}\n\n`;
+
+        // Bollinger Bands
+        message += `📈 Bollinger Bands (20,2)\n`;
+        message += `Верхняя: ${indicators.bollinger.upper.toFixed(2)}\n`;
+        message += `Средняя: ${indicators.bollinger.middle.toFixed(2)}\n`;
+        message += `Нижняя: ${indicators.bollinger.lower.toFixed(2)}\n`;
+        message += `Позиция цены: ${indicators.bollinger.pricePosition.toFixed(1)}%\n\n`;
+
+        // Stochastic
+        message += `📊 Stochastic (14,3)\n`;
+        message += `K: ${indicators.stochastic.k.toFixed(2)}\n`;
+        message += `D: ${indicators.stochastic.d.toFixed(2)}\n`;
+        message += `Состояние: ${indicators.stochastic.overbought ? 'ПЕРЕКУПЛЕННОСТЬ' : indicators.stochastic.oversold ? 'ПЕРЕПРОДАНОСТЬ' : 'НЕЙТРАЛЬНО'}`;
+
+        bot.sendMessage(chatId, message, mainKeyboard);
+    });
 }
 
-async function showStatus(ctx) {
-    const timeRemaining = formatTimeRemaining(nextAnalysisTime);
-    const nextTimeString = new Date(nextAnalysisTime).toLocaleTimeString();
+function sendLevelsInfo(chatId) {
+    fetchMarketData().then(() => {
+        calculateFibonacciLevels();
+        calculateSupportResistance();
+        const lastCandle = marketData[marketData.length - 1];
+        const currentPrice = lastCandle.close;
 
-    await sendMessage(ctx, `📊 *Статус бота*\n\n✅ Бот активен и работает\n⏱ Следующий автоматический анализ через: ${timeRemaining}\n🕒 Точное время следующего анализа: ${nextTimeString}\n📈 Отслеживаемые пары: ${SYMBOLS.map(s => s.name).join(', ')}`);
+        let message = `📊 Уровни рынка (BTCUSDT 15m)\n\n`;
+        message += `📈 Текущая цена: ${currentPrice.toFixed(2)}\n\n`;
+
+        // Фибоначчи
+        message += `📉 Уровни Фибоначчи:\n`;
+        message += `23.6%: ${fibLevels.level236.toFixed(2)}\n`;
+        message += `38.2%: ${fibLevels.level382.toFixed(2)}\n`;
+        message += `50.0%: ${fibLevels.level500.toFixed(2)}\n`;
+        message += `61.8%: ${fibLevels.level618.toFixed(2)}\n\n`;
+
+        // Ближайшие уровни поддержки/сопротивления
+        message += `📌 Ближайшие уровни:\n`;
+        const nearbyLevels = supportResistanceLevels
+            .filter(level => Math.abs(level.value - currentPrice) / currentPrice < 0.1)
+            .sort((a, b) => Math.abs(a.value - currentPrice) - Math.abs(b.value - currentPrice))
+            .slice(0, 4);
+
+        if (nearbyLevels.length > 0) {
+            nearbyLevels.forEach(level => {
+                const distance = ((level.value - currentPrice) / currentPrice * 100).toFixed(2);
+                message += `${level.type === 'support' ? '🔵 Поддержка' : '🔴 Сопротивление'}: ${level.value.toFixed(2)} (${distance}%)\n`;
+            });
+        } else {
+            message += `Нет близких значимых уровней\n`;
+        }
+
+        bot.sendMessage(chatId, message, mainKeyboard);
+    });
 }
 
-async function runAnalysisNow(ctx) {
-    if (autoAnalysisTimer) clearTimeout(autoAnalysisTimer);
-    await sendMessage(ctx, '⚡ Запускаю углубленный анализ немедленно...');
-    await sendSignals(ctx, false);
+// Обработка ошибок
+function sendError(errorMessage) {
+    console.error(`[ERROR] ${new Date().toISOString()}: ${errorMessage}`);
+    bot.sendMessage(CHAT_ID, `⚠️ Ошибка в работе бота: ${error.message}`)
+        .catch(err => console.error(`Не удалось отправить сообщение об ошибке: ${err.message}`));
 }
 
-const runAutoAnalysis = async () => {
-    try {
-        console.log('Запуск автоматического анализа...');
-        await sendSignals(null, true);
-    } catch (error) {
-        console.error('Ошибка автоматического анализа:', error);
-        if (CHAT_ID) {
-            await bot.telegram.sendMessage(CHAT_ID,
-                `⚠️ Ошибка автоматического анализа: ${error.message}`);
-        }
-        updateNextAnalysisTime();
-    }
-};
-
-// Команды бота
-bot.start(ctx => ctx.replyWithMarkdown(
-    `💎 *Улучшенный Форекс Бот* 💎\n\n📈 *Отслеживаемые пары*: ${SYMBOLS.map(s => s.name).join(', ')}\n⏱ *Автопроверка*: каждые 5 минут\n\n*Уровни доверия*:\n${Object.values(CONFIDENCE_LEVELS).map(l => `${l.emoji} ${l.name}: ${l.description}`).join('\n')}`,
-    {
-        reply_markup: {
-            keyboard: [
-                [{ text: '📈 Получить сигналы' }, { text: '📊 Статус' }],
-                [{ text: '⚡ Запустить анализ сейчас' }],
-                [{ text: 'ℹ️ О боте' }]
-            ], 
-            resize_keyboard: true
-        }
-    }
-));
-
-bot.hears('📈 Получить сигналы', ctx => sendSignals(ctx, false));
-bot.hears('📊 Статус', ctx => showStatus(ctx));
-bot.hears('⚡ Запустить анализ сейчас', ctx => runAnalysisNow(ctx));
-bot.hears('ℹ️ О боте', ctx => ctx.replyWithMarkdown(
-    `🤖 *Улучшенный Форекс Бот*\n\n` +
-    `Этот бот использует комплексный анализ рынка с несколькими индикаторами:\n` +
-    `- Трендовые индикаторы (SMA, EMA)\n` +
-    `- Осцилляторы (RSI, MACD)\n` +
-    `- Анализ волатильности (ATR)\n\n` +
-    `Сигналы сопровождаются уровнями доверия для лучшей оценки рисков.`
-));
-
-async function startBot() {
-    try {
-        console.log('Проверка окружения...');
-        if (!process.env.BOT_TOKEN || !process.env.API_KEY) {
-            throw new Error('Не заданы обязательные переменные окружения');
-        }
-
-        console.log('Проверка доступности API...');
-        const testUrl = `${BASE_URL}/time_series?symbol=EUR/USD&interval=1min&outputsize=1&apikey=${API_KEY}`;
-        const testData = await fetchData(testUrl);
-        if (!testData.values) throw new Error('API не отвечает корректно');
-        console.log('API доступен и отвечает корректно');
-
-        await bot.launch();
-        console.log('🤖 Бот запущен');
-
-        if (CHAT_ID) {
-            await bot.telegram.sendMessage(CHAT_ID, 
-                '💎 *Улучшенный Форекс Бот активирован!*\n\n' +
-                '✅ Автоматический анализ каждые 5 минут\n' +
-                `📊 Отслеживаемые пары: ${SYMBOLS.map(s => s.name).join(', ')}\n\n` +
-                'Используйте команды в боте для управления.');
-
-            nextAnalysisTime = Date.now() + 10000;
-            autoAnalysisTimer = setTimeout(runAutoAnalysis, 10000);
-        }
-    } catch (error) {
-        console.error('🚨 Ошибка запуска:', error.message);
-        process.exit(1);
-    }
-}
-
-startBot();
-
-
-// Обработчики для корректного завершения
-
-process.once('SIGINT', () => {
-    console.log('Получен сигнал SIGINT, завершение работы...');
-    if (autoAnalysisTimer) clearTimeout(autoAnalysisTimer);
-    bot.stop('SIGINT');
+// Обработчики команд
+bot.onText(/\/start/, (msg) => {
+    const chatId = msg.chat.id;
+    bot.sendMessage(chatId, `🔮 Бот анализа рынка запущен!\n\nИспользуйте кнопки ниже для анализа рынка.`, mainKeyboard);
 });
-process.once('SIGTERM', () => {
-    console.log('Получен сигнал SIGTERM, завершение работы...');
-    if (autoAnalysisTimer) clearTimeout(autoAnalysisTimer);
-    bot.stop('SIGTERM');
+
+// Обработка нажатий кнопок
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id;
+    const text = msg.text;
+
+    if (!text) return;
+
+    switch (text) {
+        case '📊 Анализ рынка':
+            sendMarketAnalysis(chatId);
+            break;
+
+        case '📈 Индикаторы':
+            sendIndicatorsInfo(chatId);
+            break;
+
+        case '📉 Уровни':
+            sendLevelsInfo(chatId);
+            break;
+
+        case '⚙️ Настройки':
+            bot.sendMessage(chatId, 'Выберите параметр для настройки:', {
+                reply_markup: {
+                    keyboard: [
+                        ['Изменить пару', 'Изменить таймфрейм'],
+                        ['Назад']
+                    ],
+                    resize_keyboard: true
+                }
+            });
+            break;
+
+        case 'Изменить пару':
+            bot.sendMessage(chatId, 'Выберите торговую пару:', symbolKeyboard);
+            break;
+
+        case 'Изменить таймфрейм':
+            bot.sendMessage(chatId, 'Выберите таймфрейм:', intervalKeyboard);
+            break;
+
+        case '15m':
+        case '1h':
+        case '4h':
+        case '1d':
+            bot.sendMessage(chatId, `Таймфрейм изменен на ${text}. Новые анализы будут использовать этот интервал.`, mainKeyboard);
+            break;
+
+        case 'BTCUSDT':
+        case 'ETHUSDT':
+        case 'BNBUSDT':
+        case 'SOLUSDT':
+            bot.sendMessage(chatId, `Торговая пара изменена на ${text}. Новые анализы будут использовать эту пару.`, mainKeyboard);
+            break;
+
+        case 'Назад':
+            bot.sendMessage(chatId, 'Главное меню', mainKeyboard);
+            break;
+    }
 });
+
+// Планировщик анализа
+setInterval(() => {
+    analyzeMarket();
+}, 15 * 60 * 1000); // Каждые 15 минут
+
+// Автоматический анализ
+function analyzeMarket() {
+    if (Date.now() - lastAnalysisTime < 15 * 60 * 1000) return;
+    lastAnalysisTime = Date.now();
+
+    sendMarketAnalysis(CHAT_ID)
+        .catch(error => sendError(`Ошибка автоматического анализа: ${error.message}`));
+}
+
+console.log('Бот запущен...');
