@@ -3,7 +3,7 @@ const axios = require('axios');
 const ti = require('technicalindicators');
 
 // Konfiguratsiya
-const BOT_TOKEN = '5806761771:AAE8ga44DdnzVqquIr7_WKabJz8k6YYIOcw';
+const BOT_TOKEN = '7955550632:AAGrNgJRVbnIWsckCkcyZglo-lxvooWT3Wg';
 const API_KEY = 'a9db6b712c1a40299e39d7266af5b2b3';
 const CHAT_ID = '5214859281';
 
