@@ -74,11 +74,11 @@ async function fetchMarketData(symbol = 'EUR/USD', interval = '15min', limit = 1
                 format: 'JSON'
             }
         });
-
+        
         if (!response.data || !response.data.values) {
             throw new Error('Ma\'lumotlar formati noto\'g\'ri');
         }
-
+        
         marketData = response.data.values.map(item => ({
             time: new Date(item.datetime).getTime(),
             open: parseFloat(item.open),
@@ -102,10 +102,10 @@ function calculateFibonacciLevels() {
     const recentData = marketData.slice(-50);
     const highs = recentData.map(item => item.high);
     const lows = recentData.map(item => item.low);
-
+    
     let highestHigh = Math.max(...highs);
     let lowestLow = Math.min(...lows);
-
+    
     // Agar hozirgi narx ekstremumdan uzoqda bo'lsa, so'nggi swinglardan foydalanish
     const currentPrice = marketData[marketData.length - 1].close;
     if (currentPrice < lowestLow || currentPrice > highestHigh) {
@@ -134,7 +134,7 @@ function calculateFibonacciLevels() {
 function findSwingPoints(data, sensitivity = 3) {
     const highs = [];
     const lows = [];
-
+    
     for (let i = sensitivity; i < data.length - sensitivity; i++) {
         const windowHigh = data.slice(i - sensitivity, i + sensitivity + 1).map(item => item.high);
         const windowLow = data.slice(i - sensitivity, i + sensitivity + 1).map(item => item.low);
@@ -156,7 +156,7 @@ function findSwingPoints(data, sensitivity = 3) {
             });
         }
     }
-
+    
     return { highs, lows };
 }
 
@@ -438,7 +438,7 @@ async function sendMarketAnalysis(chatId) {
         message += `📊 Fibonachchi darajalari:\n`;
         message += `0% (Yuqori): ${fibLevels.point0.toFixed(4)}\n`;
         message += `100% (Past): ${fibLevels.point100.toFixed(4)}\n\n`;
-
+        
         // Eng yaqin darajalar
         message += `📌 Eng yaqin darajalar:\n`;
         if (closestFibLevel) {
