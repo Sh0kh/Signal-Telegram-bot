@@ -58,9 +58,14 @@ async function fetchMarketData(symbol, interval) {
 }
 
 async function analyzeMarket(chatId) {
+    // Проверка настроек
     const settings = getUserSettings(chatId);
-    if (!settings.active) return;
+    if (!settings || !settings.active) {
+        await bot.sendMessage(chatId, '⚠️ Sozlamalar topilmadi yoki tahlil oʻchirilgan');
+        return;
+    }
 
+    // Время анализа
     const analysisTime = new Date();
     const timeString = analysisTime.toLocaleString('ru-RU', {
         day: '2-digit',
@@ -71,23 +76,31 @@ async function analyzeMarket(chatId) {
     });
 
     try {
+        // Получение рыночных данных
         const marketData = await fetchMarketData(settings.symbol, settings.interval);
         if (!marketData || marketData.length < 50) {
-            bot.sendMessage(chatId, `⚠️ Yetarli maʼlumot yoʻq (${marketData?.length || 0} dan 50 ta shamchi)`);
+            await bot.sendMessage(chatId, `⚠️ Yetarli maʼlumot yoʻq (${marketData?.length || 0} dan 50 ta shamchi)`);
             return;
         }
 
-        // Trend va ekstremumlarni aniqlash
+        // Подготовка данных
         const last50 = marketData.slice(-50);
-        const highs = last50.map(item => item.high);
-        const lows = last50.map(item => item.low);
+        const highs = last50.map(item => parseFloat(item.high)).filter(val => !isNaN(val));
+        const lows = last50.map(item => parseFloat(item.low)).filter(val => !isNaN(val));
+        const closes = last50.map(item => parseFloat(item.close)).filter(val => !isNaN(val));
 
+        if (highs.length < 14 || lows.length < 14 || closes.length < 14) {
+            await bot.sendMessage(chatId, '⚠️ Notoʻgʻri maʼlumotlar - qiymatlar soni yetarli emas');
+            return;
+        }
+
+        // Определение тренда
         const highestHigh = Math.max(...highs);
         const lowestLow = Math.min(...lows);
         const isUptrend = highs.lastIndexOf(highestHigh) > lows.lastIndexOf(lowestLow);
         const range = highestHigh - lowestLow;
 
-        // Barcha Fibonachchi darajalari
+        // Уровни Фибоначчи
         const fibLevels = [
             { level: 0, price: isUptrend ? lowestLow : highestHigh, type: isUptrend ? "Low" : "High" },
             { level: 23.6, price: isUptrend ? lowestLow + range * 0.236 : highestHigh - range * 0.236 },
@@ -98,63 +111,123 @@ async function analyzeMarket(chatId) {
             { level: 100, price: isUptrend ? highestHigh : lowestLow, type: isUptrend ? "High" : "Low" }
         ];
 
-        // Joriy maʼlumotlar
-        const currentPrice = marketData[marketData.length - 1].close;
-        const closes = marketData.map(item => item.close);
-        const rsi = ti.RSI.calculate({ values: closes, period: 14 }).slice(-3);
-        const macd = ti.MACD.calculate({
-            values: closes,
-            fastPeriod: 12,
-            slowPeriod: 26,
-            signalPeriod: 9
-        }).slice(-3);
+        // Текущая цена с проверкой
+        const currentPrice = closes[closes.length - 1] || 0;
 
-        // Xabar shakllantirish
+        // Расчет индикаторов с защитой от ошибок
+        let lastRsi = 50;
+        let lastStoch = { stoch: 50, signal: 50 };
+        let macdHistogram = 0;
+
+        try {
+            // RSI
+            const rsiValues = ti.RSI?.calculate?.({ values: closes, period: 14 }) || [];
+            lastRsi = rsiValues[rsiValues.length - 1] || 50;
+
+            // Stochastic
+            const stochastic = ti.Stochastic?.calculate?.({
+                high: highs,
+                low: lows,
+                close: closes,
+                period: 14,
+                signalPeriod: 3
+            }) || [];
+            lastStoch = stochastic[stochastic.length - 1] || { stoch: 50, signal: 50 };
+
+            // MACD
+            const macdValues = ti.MACD?.calculate?.({
+                values: closes,
+                fastPeriod: 12,
+                slowPeriod: 26,
+                signalPeriod: 9
+            }) || [];
+            const lastMacd = macdValues[macdValues.length - 1] || { histogram: 0 };
+            macdHistogram = lastMacd.histogram || 0;
+        } catch (indicatorError) {
+            console.error('Indikator xatosi:', indicatorError);
+        }
+
+        // Формирование сообщения
         let message = `📅 ${timeString} | ${settings.symbol} ${settings.interval}\n`;
-        message += `📌 Trend: ${isUptrend ? "🟢 Koʻtariluvchi" : "🔴 Pasayuvchi"}\n\n`;
+        message += `📌 Trend: ${isUptrend ? "🟢 Koʻtariluvchi" : "🔴 Pasayuvchi"}\n`;
+        message += `💰 Joriy narx: ${(currentPrice || 0).toFixed(5)}\n\n`;
 
-        // Asosiy darajalar (nusxa olish uchun)
+        // Анализ индикаторов
+        message += `📊 Indikatorlar:\n`;
+
+        // RSI
+        const safeRsi = lastRsi || 50;
+        let rsiStatus = "Neytral";
+        if (safeRsi >= 70) rsiStatus = "🔴 Oshib ketgan (Sotish)";
+        else if (safeRsi <= 30) rsiStatus = "🟢 Past (Sotib olish)";
+        else if (safeRsi > 50) rsiStatus = "🟢 Kuchli";
+        else rsiStatus = "🔴 Zaif";
+        message += `• RSI (14): ${safeRsi.toFixed(2)} - ${rsiStatus}\n`;
+
+        // Stochastic
+        const stochK = lastStoch.stoch || 50;
+        const stochD = lastStoch.signal || 50;
+        let stochStatus = "Neytral";
+        if (stochK >= 80) stochStatus = "🔴 Oshib ketgan";
+        else if (stochK <= 20) stochStatus = "🟢 Past";
+        else if (stochK > stochD) stochStatus = "🟢 Koʻtarilish";
+        else stochStatus = "🔴 Tushish";
+        message += `• Stochastic: K=${stochK.toFixed(2)}, D=${stochD.toFixed(2)} - ${stochStatus}\n`;
+
+        // MACD
+        const safeMacd = macdHistogram || 0;
+        let macdStatus = safeMacd > 0 ? "🟢 Koʻtarilish" : "🔴 Tushish";
+        message += `• MACD: ${safeMacd.toFixed(5)} - ${macdStatus}\n\n`;
+
+        // Уровни Фибоначчи
         message += `🔷 Fibonachchi darajalari:\n`;
         fibLevels.forEach(level => {
-            const levelName = level.level === 0 || level.level === 100 ?
+            const levelName = level.level === 0 || level.level === 100 ? 
                 `${level.level}% (${level.type})` : `${level.level}%`;
-            message += `${levelName}: <code>${level.price.toFixed(5)}</code>\n`;
+            const price = level.price || 0;
+            message += `${levelName}: <code>${price.toFixed(5)}</code>\n`;
         });
-        message += `\n💰 Joriy narx: ${currentPrice.toFixed(5)}\n\n`;
 
-        // Faol darajalarni topish (eng yaqin 3 tasi)
+        // Ближайшие уровни
         const activeLevels = fibLevels
             .map(level => ({
                 ...level,
-                distance: Math.abs(currentPrice - level.price)
+                distance: Math.abs((currentPrice || 0) - (level.price || 0))
             }))
-            .sort((a, b) => a.distance - b.distance)
+            .sort((a, b) => (a.distance || 0) - (b.distance || 0))
             .slice(0, 3);
 
-        message += `🎯 Eng yaqin darajalar:\n`;
+        message += `\n🎯 Eng yaqin darajalar:\n`;
         activeLevels.forEach(level => {
-            const direction = currentPrice > level.price ? "↓" : "↑";
-            message += `${level.level}%: ${level.price.toFixed(5)} ${direction} (${level.distance.toFixed(5)})\n`;
+            const direction = (currentPrice || 0) > (level.price || 0) ? "↓" : "↑";
+            message += `${level.level}%: ${(level.price || 0).toFixed(5)} ${direction} (${(level.distance || 0).toFixed(5)})\n`;
         });
-        message += `\n`;
 
-        // Har bir faol darajani tahlil qilish
+        // Определение сигналов
         let signals = [];
         activeLevels.forEach(level => {
-            if (level.distance / level.price < 0.005) {
-                const rsiCondition = isUptrend ?
-                    (level.level >= 61.8 ? rsi.some(v => v > 70) : rsi.some(v => v < 30)) :
-                    (level.level >= 61.8 ? rsi.some(v => v < 30) : rsi.some(v => v > 70));
+            const distance = level.distance || 0;
+            const price = level.price || 0;
+            
+            if (distance / (currentPrice || 1) < 0.005) {
+                const rsiSignal = isUptrend ? 
+                    (level.level >= 61.8 ? safeRsi > 70 : safeRsi < 30) :
+                    (level.level >= 61.8 ? safeRsi < 30 : safeRsi > 70);
 
-                const macdCondition = isUptrend ?
-                    (level.level >= 61.8 ? macd[2].histogram < macd[1].histogram : macd[2].histogram > macd[1].histogram) :
-                    (level.level >= 61.8 ? macd[2].histogram > macd[1].histogram : macd[2].histogram < macd[1].histogram);
+                const stochSignal = isUptrend ?
+                    (level.level >= 61.8 ? stochK > 80 : stochK < 20) :
+                    (level.level >= 61.8 ? stochK < 20 : stochK > 80);
 
+                const macdSignal = isUptrend ?
+                    (level.level >= 61.8 ? safeMacd < 0 : safeMacd > 0) :
+                    (level.level >= 61.8 ? safeMacd > 0 : safeMacd < 0);
+
+                const strength = [rsiSignal, stochSignal, macdSignal].filter(Boolean).length;
+                
                 signals.push({
                     level: level.level,
-                    price: level.price,
-                    strength: rsiCondition && macdCondition ? "strong" :
-                        rsiCondition || macdCondition ? "medium" : "weak",
+                    price: price,
+                    strength: strength === 3 ? "strong" : strength >= 1 ? "medium" : "weak",
                     direction: isUptrend ?
                         (level.level >= 61.8 ? "pastga burilish" : "yuqoriga qaytish") :
                         (level.level >= 61.8 ? "yuqoriga burilish" : "pastga qaytish")
@@ -162,42 +235,44 @@ async function analyzeMarket(chatId) {
             }
         });
 
-        // Signallarni shakllantirish
+        // Формирование сигналов
         if (signals.length > 0) {
-            message += `🚨 Signallar:\n`;
+            message += `\n🚨 Signallar:\n`;
             signals.forEach(signal => {
-                message += `\n▫️ Daraja ${signal.level}% (${signal.price.toFixed(5)})\n`;
-                message += `- Potentsial: ${signal.direction}\n`;
+                message += `\n▫️ ${signal.level}% darajada (${(signal.price || 0).toFixed(5)})\n`;
+                message += `- Yoʻnalish: ${signal.direction}\n`;
                 message += `- Kuch: ${signal.strength === "strong" ? "Kuchli" : signal.strength === "medium" ? "Oʻrtacha" : "Zaif"}\n`;
-                message += `- Harakat: ${signal.strength === "strong" ?
-                    (isUptrend ? "SELLni koʻrib chiqing" : "BUYni koʻrib chiqing") :
-                    "Kuzatish"}`;
+                message += `- Harakat: ${signal.strength === "strong" ? 
+                    (isUptrend ? "SELLni koʻrib chiqing" : "BUYni koʻrib chiqing") : 
+                    "Kuzatib boring"}\n`;
             });
         } else {
-            message += `🔍 Aniq signallar yoʻq. Narx darajalar oraligʻida.\n`;
+            message += `\n🔍 Hozircha aniq signallar yoʻq. Bozor neytral holatda.\n`;
         }
 
-        // Yakuniy prognoz
-        message += `\n🎯 YAKUNIY PROGNOZ:\n`;
+        // Финальные рекомендации
+        message += `\n🎯 Yakuniy tavsiya:\n`;
         if (signals.some(s => s.strength === "strong")) {
             const strongSignal = signals.find(s => s.strength === "strong");
-            message += `💎 Asosiy stsenariy: ${strongSignal.direction} ${strongSignal.level}% da\n`;
-            message += `📌 Tavsiya: ${isUptrend ? "Sotish" : "Sotib olish"} tasdiqlangan holda`;
-        } else if (signals.length > 0) {
-            message += `📊 Mumkin ${signals[0].direction} ${signals[0].level}% da\n`;
-            message += `📌 Indikatorlardan tasdiqni kutamiz`;
+            message += `💎 Kuchli signal: ${strongSignal.direction} (${strongSignal.level}% darajada)\n`;
+            message += `📌 ${isUptrend ? "Sotishni koʻrib chiqing" : "Sotib olishni koʻrib chiqing"}`;
+        } else if (safeRsi > 70 && stochK > 80) {
+            message += `⚠️ Diqqat! Koʻp indikatorlar oshib ketganligini koʻrsatmoqda\n`;
+            message += `📌 Qisqa muddatda sotish imkoniyati`;
+        } else if (safeRsi < 30 && stochK < 20) {
+            message += `⚠️ Diqqat! Koʻp indikatorlar yetarli darajada pastligini koʻrsatmoqda\n`;
+            message += `📌 Qisqa muddatda sotib olish imkoniyati`;
         } else {
-            const nearestLevel = activeLevels[0];
-            message += `📈 Narx ${nearestLevel.level}% darajasiga (${nearestLevel.price.toFixed(5)}) harakat qilmoqda\n`;
-            message += `📌 ${currentPrice > nearestLevel.price ? "sotish" : "sotib olish"} uchun tayyorlaning`;
+            message += `📊 Hozircha aniq yoʻnalish yoʻq. Bozor kuzatish rejimida.\n`;
+            message += `📌 Keyingi signallarni kutib turing`;
         }
 
-        // Xabarni yuborish
-        bot.sendMessage(chatId, message, { parse_mode: "HTML" });
+        // Отправка сообщения
+        await bot.sendMessage(chatId, message, { parse_mode: "HTML" });
 
     } catch (error) {
         console.error('Tahlil xatosi:', error);
-        bot.sendMessage(chatId, `❌ Xato: ${error.message}`);
+        await bot.sendMessage(chatId, `❌ Xato: ${error.message}\nIltimos, qayta urunib koʻring yoki texnik yordamga murojaat qiling.`);
     }
 }
 
@@ -255,10 +330,10 @@ bot.on('message', async (msg) => {
             for (let i = 0; i < availablePairs.length; i += 3) {
                 pairGroups.push(availablePairs.slice(i, i + 3).map(pair => ({ text: pair })));
             }
-            
+
             // Добавляем кнопку "Orqaga" в отдельный ряд
             pairGroups.push([{ text: 'Orqaga' }]);
-            
+
             bot.sendMessage(chatId, 'Valyuta juftligini tanlang:', {
                 reply_markup: {
                     keyboard: pairGroups,
