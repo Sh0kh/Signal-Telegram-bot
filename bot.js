@@ -250,13 +250,18 @@ bot.on('message', async (msg) => {
             bot.sendMessage(chatId, `Joriy sozlamalar:\n\nJuftlik: ${settings.symbol}\nVaqt oraligʻi: ${settings.interval}\nTahlil: ${status}`, settingsKeyboard);
         }
         else if (text === 'Valyuta juftligini tanlash') {
-            const pairButtons = availablePairs.map(pair => ({ text: pair }));
+            // Разбиваем пары на группы по 3 для лучшего отображения
+            const pairGroups = [];
+            for (let i = 0; i < availablePairs.length; i += 3) {
+                pairGroups.push(availablePairs.slice(i, i + 3).map(pair => ({ text: pair })));
+            }
+            
+            // Добавляем кнопку "Orqaga" в отдельный ряд
+            pairGroups.push([{ text: 'Orqaga' }]);
+            
             bot.sendMessage(chatId, 'Valyuta juftligini tanlang:', {
                 reply_markup: {
-                    keyboard: [
-                        pairButtons,
-                        [{ text: 'Orqaga' }]
-                    ],
+                    keyboard: pairGroups,
                     resize_keyboard: true
                 }
             });
