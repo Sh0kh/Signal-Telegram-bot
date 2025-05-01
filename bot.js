@@ -3,7 +3,7 @@ const axios = require('axios');
 const ti = require('technicalindicators');
 
 // Konfiguratsiya (O'Z MA'LUMOTLARINGIZNI QO'YING)
-const BOT_TOKEN = '7955550632:AAGrNgJRVbnIWsckCkcyZglo-lxvooWT3Wg';
+const BOT_TOKEN = '7914277313:AAHXJcKaKqH8tpPtyFBfu9IxcBpFJSoBKp8';
 const API_KEY = 'a9db6b712c1a40299e39d7266af5b2b3';
 
 // Botni ishga tushirish
