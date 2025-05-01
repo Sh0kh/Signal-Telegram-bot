@@ -24,7 +24,7 @@ function getUserSettings(chatId) {
 }
 
 // Mavjud juftliklar va vaqt oraliklari
-const availablePairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'BTC/USD'];
+const availablePairs = ['EUR/USD', 'GBP/USD', 'USD/JPY', 'AUD/USD', 'GBP/JPY', 'EUR/JPY', 'CHF/JPY', 'CAD/JPY', 'GBP/CAD', 'EUR/GBP', 'ADU/JPY', 'USD/CAD', 'EUR/CHF', 'USD/CHF', 'BTC/USD'];
 const availableIntervals = ['5min', '15min', '1h', '4h', '1day'];
 
 // Asosiy funksiyalar
