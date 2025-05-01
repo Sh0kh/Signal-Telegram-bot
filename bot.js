@@ -114,35 +114,63 @@ async function analyzeMarket(chatId) {
         // Текущая цена с проверкой
         const currentPrice = closes[closes.length - 1] || 0;
 
-        // Расчет индикаторов с защитой от ошибок
+        // Расчет индикаторов
         let lastRsi = 50;
-        let lastStoch = { stoch: 50, signal: 50 };
+        let stochK = 50;
+        let stochD = 50;
         let macdHistogram = 0;
 
         try {
-            // RSI
-            const rsiValues = ti.RSI?.calculate?.({ values: closes, period: 14 }) || [];
-            lastRsi = rsiValues[rsiValues.length - 1] || 50;
+            // RSI расчет
+            const rsiValues = ti.RSI.calculate({ values: closes, period: 14 });
+            lastRsi = rsiValues?.length > 0 ? rsiValues[rsiValues.length - 1] : 50;
 
-            // Stochastic
-            const stochastic = ti.Stochastic?.calculate?.({
-                high: highs,
-                low: lows,
-                close: closes,
-                period: 14,
-                signalPeriod: 3
-            }) || [];
-            lastStoch = stochastic[stochastic.length - 1] || { stoch: 50, signal: 50 };
+            // Stochastic расчет (ручной вариант)
+            const stochPeriod = 14;
+            const signalPeriod = 3;
+            const kValues = [];
+            
+            for (let i = stochPeriod - 1; i < closes.length; i++) {
+                const currentClose = closes[i];
+                const lowest = Math.min(...lows.slice(i - stochPeriod + 1, i + 1));
+                const highest = Math.max(...highs.slice(i - stochPeriod + 1, i + 1));
+                
+                const k = highest - lowest !== 0 
+                    ? ((currentClose - lowest) / (highest - lowest)) * 100
+                    : 50;
+                
+                kValues.push(k);
+            }
+            
+            // Расчет сигнальной линии (D)
+            if (kValues.length >= signalPeriod) {
+                for (let i = signalPeriod - 1; i < kValues.length; i++) {
+                    const d = kValues.slice(i - signalPeriod + 1, i + 1)
+                        .reduce((sum, val) => sum + val, 0) / signalPeriod;
+                    if (i === kValues.length - 1) stochD = d;
+                }
+            }
+            
+            stochK = kValues.length > 0 ? kValues[kValues.length - 1] : 50;
 
-            // MACD
-            const macdValues = ti.MACD?.calculate?.({
+            // MACD расчет
+            const macdValues = ti.MACD.calculate({
                 values: closes,
                 fastPeriod: 12,
                 slowPeriod: 26,
                 signalPeriod: 9
-            }) || [];
-            const lastMacd = macdValues[macdValues.length - 1] || { histogram: 0 };
-            macdHistogram = lastMacd.histogram || 0;
+            });
+            if (macdValues && macdValues.length > 0) {
+                macdHistogram = macdValues[macdValues.length - 1]?.histogram || 0;
+            }
+
+            console.log('Indikator qiymatlari:', {
+                rsi: lastRsi,
+                stochK,
+                stochD,
+                macd: macdHistogram
+            });
+
         } catch (indicatorError) {
             console.error('Indikator xatosi:', indicatorError);
         }
@@ -150,7 +178,7 @@ async function analyzeMarket(chatId) {
         // Формирование сообщения
         let message = `📅 ${timeString} | ${settings.symbol} ${settings.interval}\n`;
         message += `📌 Trend: ${isUptrend ? "🟢 Koʻtariluvchi" : "🔴 Pasayuvchi"}\n`;
-        message += `💰 Joriy narx: ${(currentPrice || 0).toFixed(5)}\n\n`;
+        message += `💰 Joriy narx: ${currentPrice.toFixed(5)}\n\n`;
 
         // Анализ индикаторов
         message += `📊 Indikatorlar:\n`;
@@ -165,8 +193,6 @@ async function analyzeMarket(chatId) {
         message += `• RSI (14): ${safeRsi.toFixed(2)} - ${rsiStatus}\n`;
 
         // Stochastic
-        const stochK = lastStoch.stoch || 50;
-        const stochD = lastStoch.signal || 50;
         let stochStatus = "Neytral";
         if (stochK >= 80) stochStatus = "🔴 Oshib ketgan";
         else if (stochK <= 20) stochStatus = "🟢 Past";
@@ -182,7 +208,7 @@ async function analyzeMarket(chatId) {
         // Уровни Фибоначчи
         message += `🔷 Fibonachchi darajalari:\n`;
         fibLevels.forEach(level => {
-            const levelName = level.level === 0 || level.level === 100 ? 
+            const levelName = level.level === 0 || level.level === 100 ?
                 `${level.level}% (${level.type})` : `${level.level}%`;
             const price = level.price || 0;
             message += `${levelName}: <code>${price.toFixed(5)}</code>\n`;
@@ -192,14 +218,14 @@ async function analyzeMarket(chatId) {
         const activeLevels = fibLevels
             .map(level => ({
                 ...level,
-                distance: Math.abs((currentPrice || 0) - (level.price || 0))
+                distance: Math.abs(currentPrice - (level.price || 0))
             }))
             .sort((a, b) => (a.distance || 0) - (b.distance || 0))
             .slice(0, 3);
 
         message += `\n🎯 Eng yaqin darajalar:\n`;
         activeLevels.forEach(level => {
-            const direction = (currentPrice || 0) > (level.price || 0) ? "↓" : "↑";
+            const direction = currentPrice > (level.price || 0) ? "↓" : "↑";
             message += `${level.level}%: ${(level.price || 0).toFixed(5)} ${direction} (${(level.distance || 0).toFixed(5)})\n`;
         });
 
@@ -208,9 +234,9 @@ async function analyzeMarket(chatId) {
         activeLevels.forEach(level => {
             const distance = level.distance || 0;
             const price = level.price || 0;
-            
+
             if (distance / (currentPrice || 1) < 0.005) {
-                const rsiSignal = isUptrend ? 
+                const rsiSignal = isUptrend ?
                     (level.level >= 61.8 ? safeRsi > 70 : safeRsi < 30) :
                     (level.level >= 61.8 ? safeRsi < 30 : safeRsi > 70);
 
@@ -223,7 +249,7 @@ async function analyzeMarket(chatId) {
                     (level.level >= 61.8 ? safeMacd > 0 : safeMacd < 0);
 
                 const strength = [rsiSignal, stochSignal, macdSignal].filter(Boolean).length;
-                
+
                 signals.push({
                     level: level.level,
                     price: price,
@@ -242,8 +268,8 @@ async function analyzeMarket(chatId) {
                 message += `\n▫️ ${signal.level}% darajada (${(signal.price || 0).toFixed(5)})\n`;
                 message += `- Yoʻnalish: ${signal.direction}\n`;
                 message += `- Kuch: ${signal.strength === "strong" ? "Kuchli" : signal.strength === "medium" ? "Oʻrtacha" : "Zaif"}\n`;
-                message += `- Harakat: ${signal.strength === "strong" ? 
-                    (isUptrend ? "SELLni koʻrib chiqing" : "BUYni koʻrib chiqing") : 
+                message += `- Harakat: ${signal.strength === "strong" ?
+                    (isUptrend ? "SELLni koʻrib chiqing" : "BUYni koʻrib chiqing") :
                     "Kuzatib boring"}\n`;
             });
         } else {
@@ -275,7 +301,6 @@ async function analyzeMarket(chatId) {
         await bot.sendMessage(chatId, `❌ Xato: ${error.message}\nIltimos, qayta urunib koʻring yoki texnik yordamga murojaat qiling.`);
     }
 }
-
 // Klaviaturalar
 const mainKeyboard = {
     reply_markup: {
