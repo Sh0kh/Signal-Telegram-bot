@@ -18,7 +18,7 @@ function getUserSettings(chatId) {
         userSettings[chatId] = {
             symbol: 'EUR/USD',
             interval: '15min',
-            active: false // Tahlil faolligi bayrog'i
+            active: true // Tahlil faolligi bayrog'i
         };
     }
     return userSettings[chatId];
