@@ -351,6 +351,7 @@ const mainKeyboard = {
     reply_markup: {
         keyboard: [
             ['📊 Tanlangan juftlikni tahlil qilish'],
+            ['📈 Strategiya'], // New button added here
             ['⚙️ Sozlamalar'],
             ['ℹ️ Yordam']
         ],
@@ -389,6 +390,26 @@ bot.on('message', async (msg) => {
             }
             bot.sendMessage(chatId, `${settings.symbol} juftligini ${settings.interval} oraligʻida tahlil qilish boshlandi...`);
             await analyzeMarket(chatId);
+        }
+        else if (text === '📈 Strategiya') {
+            // Send strategy information when the Strategy button is pressed
+            bot.sendMessage(chatId, 
+                `📈 Bu strategiya Fibonachchi darajalariga asoslangan va 3 ta indikatorga:
+
+1. RSI
+
+2. Stochastic
+
+3. MACD
+
+va Fibonachchi darajalari.
+
+Masalan:
+Birinchi trend aniqlanadi va Fibonachchi tortiladi. Tortilgandan keyin narx qaysidur Fibo darajasidan qaytish qiladi va o‘shanda biz bitim ochamiz. Qaytish qaysi darajadan bo‘lishini indikatorlar yordamida aniqlaymiz. Agar 3 ta indikator ham tasdiqlasa, katta lot bilan bitim ochamiz.
+
+Ko‘pincha indikatorlar birdaniga signal bermaydi va bu vaziyatda o‘zimiz texnik tahlil qilib, Fibo darajalarini test qilib bitim ochamiz, faqat minimal lot bilan.`,
+                mainKeyboard
+            );
         }
         else if (text === '⚙️ Sozlamalar') {
             let status = settings.active ? '✅ YOQILGAN' : '❌ OʻCHIRILGAN';
